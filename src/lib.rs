@@ -1,4 +1,8 @@
+mod coordinator;
+mod messages;
 pub mod node;
+mod quorum_tracker;
+mod replica;
 mod timestamp;
 mod topology;
 mod transaction;

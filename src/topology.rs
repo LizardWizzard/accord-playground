@@ -70,8 +70,6 @@ impl Topology {
         }
     }
 
-    
-
     pub fn shards_for_node(&self, node_id: NodeId) -> Vec<&Shard> {
         // TODO: with capacity can help if we now how many shards each node contains
         // TODO: we can reuse single allocattion if vec is passed as an argument
@@ -82,7 +80,7 @@ impl Topology {
     }
 
     /// Shard id is given to outside world when actual shard exists
-    /// so it serves as a proff that such a shard exists, so there
+    /// so it serves as a proof that such a shard exists, so there
     /// is no need to return option
     pub fn shard_by_id(&self, id: ShardId) -> &Shard {
         &self.shards[id.0]

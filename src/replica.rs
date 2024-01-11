@@ -17,37 +17,141 @@ pub enum WaitingOn {
     Apply,
 }
 
-/// TODO (feature): for recovery we need a way to include full tx state
-#[derive(Debug, Clone)]
-pub struct ReplicaTransactionProgress {
-    pub id: TxnId,
-    pub pre_accepted: bool,
-    pub accepted: bool,
-    pub committed: bool,
-    pub applied: bool,
-    pub execute_at: Timestamp,
-    pub max_witnessed_at: Timestamp,
-    pub body: TransactionBody,
+struct StageConsensus {
+    execute_at: Timestamp,
+    max_witnessed_at: Timestamp,
+
+    // dependencies waiting on this transaction to become committed / applied
+    // TODO describe how this can get populated during consensus stage
+    dependencies_waiting: HashSet<TxnId>,
+
+    body: TransactionBody,
+}
+
+struct StageExecution {
+    execute_at: Timestamp,
+    max_witnessed_at: Timestamp,
+
+    // dependencies we wait to commit / apply
+    // TODO currently used only in CommittedAndReadPending, decide if neds to be placed out of StageExecution
     // TODO (perf): this is inefficient, in java version in Command.java there is WaitingOn class that uses bitsets to represent dependency status
     //              additionally it compresses txids into ints by maintaining a separate mapping in a vec. Consider doing that too
     //              I havent seen the reverse mapping on java side though.
     //              Also look at updateDependencyAndMaybeExecute
     // dependencies we wait on None indicates
-    pub waiting_for_dependencies: HashMap<TxnId, WaitingOn>,
-    // dependencies waiting on us
-    pub dependencies_waiting: HashSet<TxnId>,
-    // Record ids of nodes which we received Read request from.
+    waiting_for_dependencies: HashMap<TxnId, WaitingOn>,
+    // dependencies waiting on this transaction to become committed / applied
+    dependencies_waiting: HashSet<TxnId>,
+
+    body: TransactionBody,
+}
+
+impl From<&mut StageConsensus> for StageExecution {
+    fn from(stage_consensus: &mut StageConsensus) -> Self {
+        StageExecution {
+            execute_at: stage_consensus.execute_at,
+            max_witnessed_at: stage_consensus.max_witnessed_at,
+            waiting_for_dependencies: HashMap::new(),
+            dependencies_waiting: std::mem::take(&mut stage_consensus.dependencies_waiting),
+            body: std::mem::take(&mut stage_consensus.body),
+        }
+    }
+}
+
+impl From<&mut StageExecution> for StageExecution {
+    fn from(stage_execution: &mut StageExecution) -> Self {
+        StageExecution {
+            execute_at: stage_execution.execute_at,
+            max_witnessed_at: stage_execution.max_witnessed_at,
+            waiting_for_dependencies: std::mem::take(&mut stage_execution.waiting_for_dependencies),
+            dependencies_waiting: std::mem::take(&mut stage_execution.dependencies_waiting),
+            body: std::mem::take(&mut stage_execution.body),
+        }
+    }
+}
+
+struct ReadInterest {
+    // Record ids of nodes which we received Read requests from.
     // Once transaction is committed and applied we resolve the read request by
-    // by sending requested keys. TODO (can we calculate keys at this point withoustoring them?).
-    pub pending_reads: HashSet<NodeId>,
+    // by sending requested kv pairs. TODO (can we calculate keys at this point withou storing them?).
+    // TODO can it be more than one node? in case of a recovery coordinator taking over?
+    pub send_to: NodeId,
+}
+
+enum ReplicaTransactionProgress {
+    // Initial stage when replica is notified about transaction in PreAccept round
+    PreAccepted(StageConsensus),
+    // In case PreAccept round was not sufficient to determine execution timestamp we move on to Accept round
+    Accepted(StageConsensus),
+    // After either of PreAccept or Accept transaction becomes committed
+    Committed(StageExecution),
+    // The only difference with Committed is supplementary info about pending Read requests
+    CommittedAndReadPending((StageExecution, ReadInterest)),
+    Applied(StageExecution),
 }
 
 impl ReplicaTransactionProgress {
-    pub fn mark_dependency_committed(&mut self, dep_id: TxnId) {
-        let dep = self
-            .waiting_for_dependencies
-            .get_mut(&dep_id)
-            .expect("TODO (type-safety)");
+    fn execute_at(&self) -> Timestamp {
+        use ReplicaTransactionProgress::*;
+        match self {
+            PreAccepted(pa) => pa.execute_at,
+            Accepted(a) => a.execute_at,
+            Committed(c) => c.execute_at,
+            CommittedAndReadPending((c, _)) => c.execute_at,
+            Applied(a) => a.execute_at,
+        }
+    }
+
+    fn body(&self) -> TransactionBody {
+        use ReplicaTransactionProgress::*;
+        match self {
+            PreAccepted(pa) => pa.body,
+            Accepted(a) => a.body,
+            Committed(c) => c.body,
+            CommittedAndReadPending((c, _)) => c.body,
+            Applied(a) => a.body,
+        }
+    }
+
+    fn as_mut_pre_accepted(&mut self) -> Option<&mut StageConsensus> {
+        match self {
+            ReplicaTransactionProgress::PreAccepted(pa) => Some(pa),
+            _ => None,
+        }
+    }
+
+    fn as_mut_pre_accepted_or_accepted(&mut self) -> Option<&mut StageConsensus> {
+        match self {
+            ReplicaTransactionProgress::PreAccepted(pa) => Some(pa),
+            ReplicaTransactionProgress::Accepted(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    fn as_mut_committed(&mut self) -> Option<&mut StageExecution> {
+        match self {
+            ReplicaTransactionProgress::Committed(c) => Some(c),
+            _ => None,
+        }
+    }
+
+    fn get_awaited_dependency(&mut self, dep_id: TxnId) -> &mut WaitingOn {
+        use ReplicaTransactionProgress::*;
+
+        let mut deps = match self {
+            Committed(se) => se.waiting_for_dependencies,
+            CommittedAndReadPending((se, _)) => se.waiting_for_dependencies,
+            Applied(se) => se.waiting_for_dependencies,
+            _ => unreachable!(
+                "transactions in PreAccepted/Accepted stages do not have register wait interest"
+            ),
+        };
+
+        deps.get_mut(&dep_id).expect("TODO")
+    }
+
+    fn mark_dependency_committed(&mut self, dep_id: TxnId) {
+        let dep = self.get_awaited_dependency(dep_id);
 
         // TODO:
         // replicas wait to answer this message until every such dependency has
@@ -60,10 +164,18 @@ impl ReplicaTransactionProgress {
             WaitingOn::Apply => unreachable!("cant be applied before committed"),
         }
     }
+
+    fn mark_dependency_applied(&mut self, dep_id: TxnId) {
+        let dep = self.get_awaited_dependency(dep_id);
+        match dep {
+            WaitingOn::Commit => unreachable!("cant be waiting for commit when applied"),
+            WaitingOn::Apply => *dep = WaitingOn::Apply,
+        }
+    }
 }
 
 pub struct Replica {
-    replica_transactions: HashMap<TxnId, ReplicaTransactionProgress>,
+    transactions: HashMap<TxnId, ReplicaTransactionProgress>,
 }
 
 impl Replica {
@@ -74,23 +186,23 @@ impl Replica {
         let mut max_conflicting_timestamp = initial_timestamp;
         let mut dependencies = HashSet::new();
 
-        for transaction in self
-            .replica_transactions
-            .values()
+        for (txn_id, transaction) in self
+            .transactions
+            .iter()
             // per the paper we need to only respond with with ids < req.txn.id : {γ | γ ∼ τ∧t0 γ < t0 τ}
-            .filter(|t| t.execute_at < initial_timestamp)
+            .filter(|(_, t)| t.execute_at() < initial_timestamp)
         {
             if transaction
-                .body
+                .body()
                 .keys
                 .intersection(&pre_accept.body.keys)
                 .next()
                 .is_some()
             {
                 // TODO (correctness) do we need to include keys? probably no
-                dependencies.insert(transaction.id);
+                dependencies.insert(*txn_id);
                 max_conflicting_timestamp =
-                    cmp::max(transaction.execute_at, max_conflicting_timestamp);
+                    cmp::max(transaction.execute_at(), max_conflicting_timestamp);
             }
         }
 
@@ -108,25 +220,19 @@ impl Replica {
         };
 
         // TODO (feature) handle case when transaction is already known
-        assert!(self
-            .replica_transactions
+        let inserted_new = self
+            .transactions
             .insert(
                 pre_accept.txn_id,
-                ReplicaTransactionProgress {
-                    id: pre_accept.txn_id,
-                    pre_accepted: true,
-                    accepted: false,
-                    committed: false,
-                    applied: false,
+                ReplicaTransactionProgress::PreAccepted(StageConsensus {
                     execute_at,
                     max_witnessed_at: execute_at,
-                    body: pre_accept.body,
-                    waiting_for_dependencies: HashMap::new(),
                     dependencies_waiting: HashSet::new(),
-                    pending_reads: HashSet::new()
-                },
+                    body: pre_accept.body,
+                }),
             )
-            .is_none());
+            .is_none();
+        assert!(inserted_new);
 
         PreAcceptOk {
             txn_id: pre_accept.txn_id,
@@ -137,29 +243,37 @@ impl Replica {
 
     pub fn receive_accept(&mut self, accept: Accept) -> AcceptOk {
         let transaction = self
-            .replica_transactions
+            .transactions
             .get_mut(&accept.txn_id)
             .expect("TODO (correctness)");
 
-        transaction.max_witnessed_at = cmp::max(transaction.max_witnessed_at, accept.execute_at);
-        transaction.accepted = true;
+        let mut pre_accepted = transaction.as_mut_pre_accepted().expect("TODO");
+        pre_accepted.max_witnessed_at = cmp::max(pre_accepted.max_witnessed_at, accept.execute_at);
+
+        *transaction = ReplicaTransactionProgress::Accepted(StageConsensus {
+            execute_at: pre_accepted.execute_at,
+            max_witnessed_at: pre_accepted.max_witnessed_at,
+            dependencies_waiting: std::mem::take(&mut pre_accepted.dependencies_waiting),
+            body: std::mem::take(&mut pre_accepted.body),
+        });
 
         // TODO (clarity) extract into function.
         let mut dependencies = HashSet::new();
-        for transaction in self
-            .replica_transactions
-            .values()
+        for (txn_id, transaction) in self
+            .transactions
+            .iter()
             // per the paper we need to only respond with with ids < req.txn.id : {γ | γ ∼ τ∧t0 γ < t0 τ}
-            .filter(|t| Timestamp::from(t.id) < accept.execute_at)
+            // TODO filter out ourselves?
+            .filter(|(t_id, _)| Timestamp::from(**t_id) < accept.execute_at)
         {
             if transaction
-                .body
+                .body()
                 .keys
                 .intersection(&accept.body.keys)
                 .next()
                 .is_some()
             {
-                dependencies.insert(transaction.id);
+                dependencies.insert(*txn_id);
             }
         }
 
@@ -173,23 +287,25 @@ impl Replica {
         // TODO (correctness) store full dependency set, transaction body etc
         // TODO (feature) arm recovery timer
         let transaction = self
-            .replica_transactions
+            .transactions
             .get_mut(&commit.txn_id)
             .expect("TODO (correctness)");
 
-        transaction.committed = true;
+        let stage_consensus = transaction.as_mut_pre_accepted_or_accepted().expect("TODO");
+        let stage_execution = StageExecution::from(stage_consensus);
 
         // TODO (perf): get rid of this clone. Not easy
-        let dependencies_to_advance = transaction.dependencies_waiting.clone();
+        let dependencies_to_advance = stage_execution.dependencies_waiting.clone();
         for dep_id in dependencies_to_advance {
             let dep = self
-                .replica_transactions
+                .transactions
                 .get_mut(&dep_id)
                 .expect("TODO (type-safety): can we prove that dependency id is always valid?");
 
             dep.mark_dependency_committed(dep_id);
         }
 
+        *transaction = ReplicaTransactionProgress::Committed(stage_execution);
         // TODO (correctness) why execute_at/max_witnessed_at are not updated? check with java version
     }
 
@@ -200,39 +316,49 @@ impl Replica {
         data_store: &DataStore,
     ) -> Option<ReadOk> {
         let transaction = self
-            .replica_transactions
+            .transactions
             .get(&read.txn_id)
             .expect("TODO (correctness)");
 
-        // TODO (type-safety): transaction struct should contain an enum representing valid states.
-        assert!(transaction.waiting_for_dependencies.is_empty());
+        let stage_committed = transaction.as_mut_committed().expect("TODO");
+        assert!(stage_committed.waiting_for_dependencies.is_empty());
 
         // TODO идея мультилинзы, когда мы собираем пачку ключей и из-за того что ключи разные мы можем на каждый иметь мут.
         // можно сделать через RawEntry
 
+        // Register this transaction in each of its dependencies so once they're
+        // committed/applied this transaction can move forward too
         let mut waiting_for_dependencies = HashMap::new();
 
         for dep_id in read.dependencies {
             let dep = self
-                .replica_transactions
+                .transactions
                 // TODO it is actually OK that it is missing because we send full set of dependencies
                 .get_mut(&dep_id)
                 .expect("TODO (type-safety)");
 
-            let waiting_on = match (dep.committed, dep.applied) {
-                (true, true) => None,
-                (true, false) => Some(WaitingOn::Apply),
-                (false, true) => unreachable!("uncommitted tx cant be applied"),
-                (false, false) => Some(WaitingOn::Commit),
+            use ReplicaTransactionProgress::*;
+
+            // Register transaction as awaiting progress of this one (Commit/Apply interest)
+            let waiting_on = match dep {
+                PreAccepted(sc) | Accepted(sc) => {
+                    assert!(!sc.dependencies_waiting.insert(read.txn_id));
+                    Some(WaitingOn::Commit)
+                }
+                Committed(se) | CommittedAndReadPending((se, _)) => {
+                    assert!(!se.dependencies_waiting.insert(read.txn_id));
+                    Some(WaitingOn::Apply)
+                }
+                Applied(_) => None,
             };
+
             if let Some(waiting_on) = waiting_on {
                 waiting_for_dependencies.insert(dep_id, waiting_on);
-                dep.dependencies_waiting.insert(read.txn_id);
             }
         }
 
         let transaction = self
-            .replica_transactions
+            .transactions
             .get_mut(&read.txn_id)
             .expect("index cannot be invalid because we got it in the beginning of the function");
 
@@ -243,33 +369,24 @@ impl Replica {
             //      On Commit we can store two sets of keys, home keys and foreign ones so we quickly iterate over needed ones
             return Some(ReadOk {
                 txn_id: read.txn_id,
-                reads: data_store.read_keys_if_present(transaction.body.keys.iter()),
+                reads: data_store.read_keys_if_present(stage_committed.body.keys.iter()),
             });
         }
 
-        transaction.waiting_for_dependencies = waiting_for_dependencies;
+        stage_committed.waiting_for_dependencies = waiting_for_dependencies;
 
         // TODO Can we rely on timestamp process identifier for registerering src_id in transaction?
-        let was_there = transaction.pending_reads.insert(src_node);
-        assert!(was_there);
+        *transaction = ReplicaTransactionProgress::CommittedAndReadPending((
+            StageExecution::from(stage_committed),
+            ReadInterest { send_to: src_node },
+        ));
 
         None
     }
 
     pub fn receive_apply(&mut self, src_node: NodeId, apply: Apply) -> Vec<(NodeId, ReadOk)> {
-        let progress = self
-            .replica_transactions
-            .get_mut(&apply.txn_id)
-            .expect("TODO");
+        let progress = self.transactions.get_mut(&apply.txn_id).expect("TODO");
 
         todo!()
     }
-}
-
-// TODO sometthing like?
-enum ReplicaTransactionProgress2 {
-    PreAccepted,
-    Accepted,
-    Committed,
-    Applied,
 }

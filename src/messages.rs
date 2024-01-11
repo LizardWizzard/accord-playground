@@ -27,7 +27,6 @@ pub struct Commit {
     pub txn_id: TxnId,
     pub execute_at: Timestamp,
     pub dependencies: HashSet<TxnId>,
-    pub body: TransactionBody,
 }
 
 pub struct Accept {

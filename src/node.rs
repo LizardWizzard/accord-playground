@@ -90,7 +90,8 @@ impl Node {
     }
 
     pub fn receive_apply(&mut self, src_node: NodeId, apply: Apply) -> Vec<(NodeId, ReadOk)> {
-        self.replica.receive_apply(src_node, apply)
+        self.replica
+            .receive_apply(src_node, apply, &self.data_store)
     }
 }
 

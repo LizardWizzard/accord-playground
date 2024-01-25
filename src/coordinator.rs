@@ -189,9 +189,8 @@ impl Coordinator {
                         execute_at: progress.execute_at,
                         // TODO (perf) avoid clone
                         dependencies: progress.dependencies.clone(),
-                        // TODO (perf) avoid clone and maybe avoid sending body here at all because we did send it
-                        // in pre accept and it couldnt have changed since then
-                        body: progress.body.clone(),
+                        // Note: we dont send body because it was sent during pre accept and body couldnt have changed since then
+                        // TODO: verify for recovery
                     }
                 });
             }
@@ -369,7 +368,7 @@ impl Coordinator {
                         txn_id: read_ok.txn_id,
                         execute_at: read_stage.execute_at,
                         // TODO slice deps for shard? (perf): avoid clone
-                        deps: read_stage.dependencies.clone(),
+                        dependencies: read_stage.dependencies.clone(),
                         result: result.clone(),
                     },
                 ))

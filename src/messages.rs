@@ -68,7 +68,7 @@ pub struct ReadOk {
 pub struct Apply {
     pub txn_id: TxnId,
     pub execute_at: Timestamp,
-    pub deps: HashSet<TxnId>,
+    pub dependencies: HashSet<TxnId>,
     // Result of the computation for transaction. For now we just take sum
     // of the keys that were read and add it to one of the keys value
     pub result: (Key, Value),

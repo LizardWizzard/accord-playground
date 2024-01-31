@@ -6,7 +6,7 @@ use crate::{
     messages::{Accept, AcceptOk, Apply, Commit, PreAccept, PreAcceptOk, Read, ReadOk},
     node::DataStore,
     timestamp::{Timestamp, TxnId},
-    transaction::TransactionBody,
+    transaction::{self, Key, TransactionBody, Value},
     Lens, LensIterGuard, NodeId,
 };
 
@@ -76,15 +76,64 @@ struct ReadInterest {
     pub send_to: NodeId,
 }
 
+struct Committed {
+    stage_execution: StageExecution,
+}
+
+impl Committed {
+    // TODO make this more typesafe, &mut is not ideal
+    fn apply(
+        &mut self,
+        key: Key,
+        value: Value,
+        data_store: &mut DataStore,
+    ) -> ReplicaTransactionProgress {
+        // TODO assert all dependencies are applied
+
+        transaction::apply(key, value, data_store);
+
+        ReplicaTransactionProgress::Applied
+    }
+
+    fn into_pending_apply(&mut self, result: (Key, Value)) -> ReplicaTransactionProgress {
+        ReplicaTransactionProgress::CommittedApplyPending(CommittedApplyPending {
+            stage_execution: StageExecution::from(&mut self.stage_execution),
+            pending_apply: Some(result),
+        })
+    }
+}
+
+// In case we received Apply but we are not able to perform it imediately (pending deps)
+// we need to store received result of the execution to be able to apply it when our dependencies become applied
+struct CommittedApplyPending {
+    stage_execution: StageExecution,
+    // Option because we want to Option::take it when we only have &mut
+    pending_apply: Option<(Key, Value)>,
+}
+
+impl CommittedApplyPending {
+    // TODO make this more typesafe, &mut is not ideal
+    fn apply(&mut self, data_store: &mut DataStore) -> ReplicaTransactionProgress {
+        // TODO assert all dependencies are applied
+        let (key, value) = self.pending_apply.take().expect("cant be empty");
+        transaction::apply(key, value, data_store);
+
+        ReplicaTransactionProgress::Applied
+    }
+}
+
 enum ReplicaTransactionProgress {
     // Initial stage when replica is notified about transaction in PreAccept round
     PreAccepted(StageConsensus),
     // In case PreAccept round was not sufficient to determine execution timestamp we move on to Accept round
     Accepted(StageConsensus),
     // After either of PreAccept or Accept transaction becomes committed
-    Committed(StageExecution),
+    Committed(Committed),
     // The only difference with Committed is supplementary info about pending Read requests
-    CommittedAndReadPending((StageExecution, ReadInterest)),
+    CommittedReadPending((Committed, ReadInterest)),
+
+    CommittedApplyPending(CommittedApplyPending),
+
     Applied,
 }
 
@@ -94,8 +143,9 @@ impl ReplicaTransactionProgress {
         match self {
             PreAccepted(pa) => pa.execute_at,
             Accepted(a) => a.execute_at,
-            Committed(c) => c.execute_at,
-            CommittedAndReadPending((c, _)) => c.execute_at,
+            Committed(c) => c.stage_execution.execute_at,
+            CommittedReadPending((c, _)) => c.stage_execution.execute_at,
+            CommittedApplyPending(c) => c.stage_execution.execute_at,
             Applied => todo!(),
         }
     }
@@ -105,8 +155,9 @@ impl ReplicaTransactionProgress {
         match self {
             PreAccepted(pa) => &pa.body,
             Accepted(a) => &a.body,
-            Committed(c) => &c.body,
-            CommittedAndReadPending((c, _)) => &c.body,
+            Committed(c) => &c.stage_execution.body,
+            CommittedReadPending((c, _)) => &c.stage_execution.body,
+            CommittedApplyPending(c) => &c.stage_execution.body,
             Applied => todo!(),
         }
     }
@@ -128,17 +179,17 @@ impl ReplicaTransactionProgress {
 
     fn as_mut_committed(&mut self) -> Option<&mut StageExecution> {
         match self {
-            ReplicaTransactionProgress::Committed(c) => Some(c),
+            ReplicaTransactionProgress::Committed(c) => Some(&mut c.stage_execution),
             _ => None,
         }
     }
-    // Entry<'_, TxnId, WaitingOn, hashbrown::hash_map::DefaultHashBuilder>
+
     fn pending_dependencies(&mut self) -> &mut HashMap<TxnId, WaitingOn> {
         use ReplicaTransactionProgress::*;
 
         match self {
-            Committed(se) => &mut se.pending_dependencies,
-            CommittedAndReadPending((se, _)) => &mut se.pending_dependencies,
+            Committed(c) => &mut c.stage_execution.pending_dependencies,
+            CommittedReadPending((c, _)) => &mut c.stage_execution.pending_dependencies,
             Applied => todo!(),
             _ => unreachable!(
                 "transactions in PreAccepted/Accepted stages do not have registered wait interest"
@@ -183,6 +234,7 @@ impl ReplicaTransactionProgress {
     }
 }
 
+#[derive(Default)]
 pub struct Replica {
     transactions: HashMap<TxnId, ReplicaTransactionProgress>,
 }
@@ -310,7 +362,7 @@ impl Replica {
             deps_waiting_guard
                 .for_each_mut(|_dep_id, dep| dep.mark_dependency_committed(commit.txn_id));
 
-            *progress = ReplicaTransactionProgress::Committed(stage_execution);
+            *progress = ReplicaTransactionProgress::Committed(Committed { stage_execution });
         });
 
         // TODO (correctness) why execute_at/max_witnessed_at are not updated? check with java version
@@ -334,8 +386,17 @@ impl Replica {
                     assert!(!sc.dependencies_waiting.insert(txn_id));
                     Some(WaitingOn::Commit)
                 }
-                Committed(se) | CommittedAndReadPending((se, _)) => {
-                    assert!(!se.dependencies_waiting.insert(txn_id));
+                Committed(c) => {
+                    assert!(!c.stage_execution.dependencies_waiting.insert(txn_id));
+                    Some(WaitingOn::Apply)
+                }
+                CommittedReadPending((c, _)) => {
+                    assert!(!c.stage_execution.dependencies_waiting.insert(txn_id));
+                    Some(WaitingOn::Apply)
+                }
+                CommittedApplyPending(c) => {
+                    // TODO validate this is correct for CommittedApplyPending
+                    assert!(!c.stage_execution.dependencies_waiting.insert(txn_id));
                     Some(WaitingOn::Apply)
                 }
                 Applied => None,
@@ -377,13 +438,56 @@ impl Replica {
             }
             stage_committed.pending_dependencies = pending_dependencies;
 
-            *progress = ReplicaTransactionProgress::CommittedAndReadPending((
-                StageExecution::from(stage_committed),
+            *progress = ReplicaTransactionProgress::CommittedReadPending((
+                Committed {
+                    stage_execution: StageExecution::from(stage_committed),
+                },
                 ReadInterest { send_to: src_node },
             ));
 
             None
         })
+    }
+
+    fn propagate_apply_to_waiting_dependencies<'a, 'b>(
+        txn_id: TxnId,
+        dependencies_waiting_iter_guard: LensIterGuard<'a, 'b, TxnId, ReplicaTransactionProgress>,
+        res: &mut Vec<(NodeId, ReadOk)>,
+        data_store: &mut DataStore,
+    ) {
+        use ReplicaTransactionProgress::*;
+
+        // At this point there are no pending dependencies, go ahead with apply phase
+        dependencies_waiting_iter_guard.for_each_mut(|dep_id, dep| {
+            if !dep.mark_dependency_applied(txn_id) {
+                return;
+            }
+
+            // We were the last dependency the dep was waiting on.
+            // Now it can make progress.
+            match dep {
+                Committed(_) => {
+                    // Here our dependency is no longer waiting on its dependencies
+                    // but on Apply message to be received with execution result
+                    // In this case when apply is received it will be immediately resolved
+                }
+                CommittedReadPending((c, read_interest)) => {
+                    res.push((
+                        read_interest.send_to,
+                        ReadOk {
+                            txn_id: *dep_id,
+                            reads: data_store
+                                .read_keys_if_present(c.stage_execution.body.keys.iter()),
+                        },
+                    ));
+
+                    // TODO Should we transition into ApplyPending?
+                    // We also need to be able to respond to read request multiple times
+                }
+                CommittedApplyPending(c) => *dep = c.apply(data_store),
+                _ => unreachable!(),
+            }
+        });
     }
 
     /// If there are dependencies we're waiting on -> register ourselves as waiting
@@ -392,58 +496,55 @@ impl Replica {
         &mut self,
         src_node: NodeId,
         apply: Apply,
-        data_store: &DataStore,
+        mut data_store: &mut DataStore,
     ) -> Vec<(NodeId, ReadOk)> {
+        use ReplicaTransactionProgress::*;
+
         let (mut root_guard, mut pending_deps_iter_guard) =
             Lens::new(apply.txn_id, &apply.dependencies, &mut self.transactions).expect("TODO");
 
         let mut res = vec![];
 
-        root_guard.with_mut(move |progress| {
+        root_guard.with_mut(|progress| {
             match progress {
-                ReplicaTransactionProgress::Committed(stage_execution) => {
+                Committed(committed) => {
                     let pending_dependencies = Self::register_pending_dependencies(
                         apply.txn_id,
                         &mut pending_deps_iter_guard,
                     );
 
-                    if pending_dependencies.is_empty() {
-                        let deps_waiting_guard = pending_deps_iter_guard
-                            .exchange(&stage_execution.dependencies_waiting)
+                    // There are pending dependencies, save them for later, progress will be made when they go forward
+                    if !pending_dependencies.is_empty() {
+                        committed.stage_execution.pending_dependencies = pending_dependencies;
+                        *progress = committed.into_pending_apply(apply.result);
+                        return;
+                    }
+
+                    // At this point there are no pending dependencies, go ahead with apply phase
+                    Self::propagate_apply_to_waiting_dependencies(
+                        apply.txn_id,
+                        pending_deps_iter_guard
+                            .exchange(&committed.stage_execution.dependencies_waiting)
                             // This cant fail because set of dependencies we wait on and set of dependencies
                             // waiting on us are disjoint. In other words there cant be a cycle.
-                            .expect("failed to exchange for deps_waiting_guard");
+                            .expect("failed to exchange for deps_waiting_guard"),
+                        &mut res,
+                        &mut data_store,
+                    );
 
-                        deps_waiting_guard.for_each_mut(|dep_id, dep| {
-                            if dep.mark_dependency_applied(apply.txn_id) {
-                                // We were the last dependency the dep was waiting on.
-                                // Now it can make progress.
-                                match dep {
-                                    ReplicaTransactionProgress::Committed(_) => {
-                                        // TODO assert all deps applied
-
-                                        todo!()
-                                    }
-                                    ReplicaTransactionProgress::CommittedAndReadPending((
-                                        stage_execution,
-                                        read_interest,
-                                    )) => res.push(ReadOk {
-                                        txn_id: *dep_id,
-                                        reads: data_store
-                                            .read_keys_if_present(stage_execution.body.keys.iter()),
-                                    }),
-                                    _ => unreachable!(),
-                                }
-                            }
-                        });
-
-                        *progress = ReplicaTransactionProgress::Applied;
-                    } else {
-                        stage_execution.pending_dependencies = pending_dependencies;
-                    }
+                    let (key, value) = apply.result;
+                    *progress = committed.apply(key, value, data_store);
                 }
-                ReplicaTransactionProgress::CommittedAndReadPending((se, _)) => {
-                    if se.pending_dependencies.is_empty() {}
+                CommittedReadPending(_) => {
+                    // During normal operation this is not possible because read phase must complete before apply phase.
+                    // What this could mean is that read request was satisfied by other replica and we become out of date.
+                    // So we should go forward with apply if we're ok dependency-wise.
+                    todo!("implement that in context of failure handling")
+                }
+                CommittedApplyPending(_) => {
+                    // means we received Apply second time, we transitioned into CommittedApplyPending
+                    // and this is the state where transaction waits for its dependencies to apply after receiving Apply
+                    unreachable!();
                 }
                 _ => panic!("TODO"),
             };
@@ -452,6 +553,6 @@ impl Replica {
         // in case we didnt receive read we dont have pending_dependencies calculatetd for us, we need to calculate it ourselves
         // in case there is something to wait for
 
-        todo!()
+        res
     }
 }

@@ -13,6 +13,7 @@ use crate::{
     NodeId,
 };
 
+#[derive(Default)]
 pub struct DataStore {
     data: HashMap<Key, Value>,
 }
@@ -33,6 +34,10 @@ impl DataStore {
         }
         ret
     }
+
+    pub fn insert(&mut self, key: Key, value: Value) -> Option<Value> {
+        self.data.insert(key, value)
+    }
 }
 
 /// One node takes responsibility for one or more shards
@@ -49,6 +54,29 @@ pub struct Node {
 }
 
 impl Node {
+    pub fn new(
+        id: NodeId,
+        topology: Topology,
+        timestamp_provider: TimestampProvider,
+        coordinator: Coordinator,
+        replica: Replica,
+        data_store: DataStore,
+    ) -> Self {
+        Self {
+            id,
+            topology,
+            timestamp_provider,
+            coordinator,
+            replica,
+            data_store,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn data_store_mut(&mut self) -> &mut DataStore {
+        &mut self.data_store
+    }
+
     pub fn receive_new_transaction(&mut self, txn: NewTransaction) -> Vec<(NodeId, PreAccept)> {
         self.coordinator
             .receive_new_transaction(txn, &mut self.timestamp_provider, &self.topology)
@@ -89,9 +117,18 @@ impl Node {
         self.replica.receive_read(src_node, read, &self.data_store)
     }
 
+    pub fn receive_read_ok(
+        &mut self,
+        src_node: NodeId,
+        read_ok: ReadOk,
+    ) -> Option<Vec<(NodeId, Apply)>> {
+        self.coordinator
+            .receive_read_ok(src_node, read_ok, &self.topology)
+    }
+
     pub fn receive_apply(&mut self, src_node: NodeId, apply: Apply) -> Vec<(NodeId, ReadOk)> {
         self.replica
-            .receive_apply(src_node, apply, &self.data_store)
+            .receive_apply(src_node, apply, &mut self.data_store)
     }
 }
 

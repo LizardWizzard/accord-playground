@@ -24,6 +24,12 @@ impl From<TxnId> for Timestamp {
     }
 }
 
+impl std::fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("Ts({}.{}.{})", self.time, self.seq, self.id))
+    }
+}
+
 /// Transaction id is a separate flavour of a Timestamp. It represents initial
 /// timestamp that the transaction gets assigned on the coordinator.
 /// At a later stages transaction is refferred to by its initial timestamp
@@ -40,6 +46,15 @@ impl From<Timestamp> for TxnId {
 impl AsRef<Timestamp> for TxnId {
     fn as_ref(&self) -> &Timestamp {
         &self.0
+    }
+}
+
+impl std::fmt::Display for TxnId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "Id({}.{}.{})",
+            self.0.time, self.0.seq, self.0.id
+        ))
     }
 }
 

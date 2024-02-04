@@ -126,14 +126,14 @@ where
     }
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(any(test, kani))]
+mod harness {
     use std::collections::{HashMap, HashSet};
 
+    use once_cell::sync::OnceCell;
     use tracing::info;
-    use tracing_subscriber;
 
-    use crate::{
+    pub use crate::{
         coordinator::Coordinator,
         messages::{
             Accept, AcceptOk, Apply, Commit, CommitAndRead, EitherCommitOrAccept, NewTransaction,
@@ -147,8 +147,10 @@ mod tests {
         NodeId,
     };
 
+    static LOG_HANDLE: OnceCell<()> = OnceCell::new();
+
     #[derive(Debug)]
-    enum Message {
+    pub enum Message {
         NewTransaction(NewTransaction),
         PreAccept(PreAccept),
         PreAcceptOk(PreAcceptOk),
@@ -160,13 +162,13 @@ mod tests {
         Apply(Apply),
     }
 
-    struct Harness {
+    pub struct Harness {
         pub nodes: HashMap<NodeId, Node>,
         pub topology: Topology,
     }
 
     impl Harness {
-        fn new() -> Self {
+        pub fn new() -> Self {
             let shards = vec![
                 Shard {
                     range: KeyRange {
@@ -211,6 +213,11 @@ mod tests {
                 nodes.insert(NodeId(id), node);
             }
 
+            #[cfg(not(kani))]
+            LOG_HANDLE.get_or_init(|| {
+                tracing_subscriber::fmt::init();
+            });
+
             Harness { nodes, topology }
         }
 
@@ -228,13 +235,11 @@ mod tests {
             }
         }
 
-        fn run(&mut self, initial_messages: Vec<(NodeId, NodeId, Message)>) {
+        pub fn run(&mut self, initial_messages: Vec<(NodeId, NodeId, Message)>) {
             let mut messages = initial_messages;
 
             while !messages.is_empty() {
                 let mut new_messages = vec![];
-
-                // let push = || new_messages.push(value);
 
                 for (src_node, dst_node, message) in messages.drain(..) {
                     info!("{:?} --> {:?}: {:?}", src_node, dst_node, message);
@@ -324,11 +329,16 @@ mod tests {
             }
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::harness::*;
 
     #[test]
     fn one_transaction() {
-        tracing_subscriber::fmt::init();
-
         let mut harness = Harness::new();
         for node_id in &harness.topology.shard_for_key(&Key(1)).node_ids {
             harness
@@ -357,5 +367,113 @@ mod tests {
                 },
             }),
         )]);
+    }
+
+    #[test]
+    fn two_transactions() {
+        let mut harness = Harness::new();
+        for node_id in &harness.topology.shard_for_key(&Key(1)).node_ids {
+            let data_store = harness.nodes.get_mut(node_id).unwrap().data_store_mut();
+            data_store.insert(Key(1), Value(1));
+            data_store.insert(Key(2), Value(2));
+            data_store.insert(Key(3), Value(3));
+        }
+
+        for node_id in &harness.topology.shard_for_key(&Key(11)).node_ids {
+            harness
+                .nodes
+                .get_mut(node_id)
+                .unwrap()
+                .data_store_mut()
+                .insert(Key(11), Value(11));
+        }
+
+        harness.run(vec![
+            (
+                NodeId(0),
+                NodeId(1),
+                Message::NewTransaction(NewTransaction {
+                    body: TransactionBody {
+                        keys: HashSet::from([Key(1), Key(11)]),
+                    },
+                }),
+            ),
+            (
+                NodeId(0),
+                NodeId(4),
+                Message::NewTransaction(NewTransaction {
+                    body: TransactionBody {
+                        keys: HashSet::from([Key(2), Key(11)]),
+                    },
+                }),
+            ),
+        ]);
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::harness::*;
+
+    #[kani::proof]
+    #[kani::unwind(1)]
+    fn one_transaction() {
+        let mut harness = Harness::new();
+        for node_id in &harness.topology.shard_for_key(&Key(1)).node_ids {
+            harness
+                .nodes
+                .get_mut(node_id)
+                .unwrap()
+                .data_store_mut()
+                .insert(Key(1), Value(1));
+        }
+
+        for node_id in &harness.topology.shard_for_key(&Key(11)).node_ids {
+            harness
+                .nodes
+                .get_mut(node_id)
+                .unwrap()
+                .data_store_mut()
+                .insert(Key(11), Value(11));
+        }
+
+        harness.run(vec![(
+            NodeId(0),
+            NodeId(1),
+            Message::NewTransaction(NewTransaction {
+                body: TransactionBody {
+                    keys: BTreeSet::from([Key(1), Key(11)]),
+                },
+            }),
+        )]);
+    }
+
+    #[kani::proof]
+    #[kani::unwind(100)]
+    fn new_transaction() {
+        let node_id = NodeId(1);
+
+        let shards = vec![Shard {
+            range: KeyRange {
+                lo: Key(0),
+                hi: Key(10),
+            },
+            node_ids: BTreeSet::from([node_id]),
+        }];
+
+        let topology = Topology::new(shards, BTreeMap::from([(node_id, vec![ShardId(0)])]));
+
+        let timestamp_provider = TimestampProvider::new(node_id);
+
+        let node = Node::new(
+            node_id,
+            topology.clone(),
+            timestamp_provider,
+            Coordinator::default(),
+            Replica::default(),
+            DataStore::default(),
+        );
     }
 }

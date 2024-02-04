@@ -383,23 +383,29 @@ impl Replica {
             // Register transaction as awaiting progress of this one (Commit/Apply interest)
             let waiting_on = match dep {
                 PreAccepted(sc) | Accepted(sc) => {
-                    assert!(!sc.dependencies_waiting.insert(txn_id));
+                    tracing::info!(txn_id = ?txn_id, dep_id = ?dep_id, "pre_accepted/accepted");
+                    assert!(sc.dependencies_waiting.insert(txn_id));
                     Some(WaitingOn::Commit)
                 }
                 Committed(c) => {
-                    assert!(!c.stage_execution.dependencies_waiting.insert(txn_id));
+                    tracing::info!(txn_id = ?txn_id, dep_id = ?dep_id, deps = ?c.stage_execution.dependencies_waiting, "committed");
+                    assert!(c.stage_execution.dependencies_waiting.insert(txn_id));
                     Some(WaitingOn::Apply)
                 }
                 CommittedReadPending((c, _)) => {
-                    assert!(!c.stage_execution.dependencies_waiting.insert(txn_id));
+                    tracing::info!(txn_id = ?txn_id, dep_id = ?dep_id, "committed_read_pending");
+                    assert!(c.stage_execution.dependencies_waiting.insert(txn_id));
                     Some(WaitingOn::Apply)
                 }
                 CommittedApplyPending(c) => {
+                    tracing::info!(txn_id = ?txn_id, dep_id = ?dep_id, "committed_apply_pending");
                     // TODO validate this is correct for CommittedApplyPending
-                    assert!(!c.stage_execution.dependencies_waiting.insert(txn_id));
+                    assert!(c.stage_execution.dependencies_waiting.insert(txn_id));
                     Some(WaitingOn::Apply)
                 }
-                Applied => None,
+                Applied => {
+                    tracing::info!(txn_id = ?txn_id, dep_id = ?dep_id, "applied");
+                    None},
             };
 
             if let Some(waiting_on) = waiting_on {
@@ -436,6 +442,8 @@ impl Replica {
                     reads: data_store.read_keys_if_present(stage_committed.body.keys.iter()),
                 });
             }
+            tracing::info!(txn_id = ?read.txn_id, pending = ?pending_dependencies, "CommittedReadPending");
+
             stage_committed.pending_dependencies = pending_dependencies;
 
             *progress = ReplicaTransactionProgress::CommittedReadPending((
@@ -494,7 +502,7 @@ impl Replica {
     /// If there are no such dependencies update dependencies waiting on us so they can move forward
     pub fn receive_apply(
         &mut self,
-        src_node: NodeId,
+        _src_node: NodeId,
         apply: Apply,
         mut data_store: &mut DataStore,
     ) -> Vec<(NodeId, ReadOk)> {
@@ -536,10 +544,11 @@ impl Replica {
                     *progress = committed.apply(key, value, data_store);
                 }
                 CommittedReadPending(_) => {
-                    // During normal operation this is not possible because read phase must complete before apply phase.
-                    // What this could mean is that read request was satisfied by other replica and we become out of date.
+                    // This could mean is that read request was satisfied by other replica and we become out of date.
                     // So we should go forward with apply if we're ok dependency-wise.
-                    todo!("implement that in context of failure handling")
+                    // Also since we cant transition to to ApplyPending because we dont have result yet when
+                    // ReadOk is satisfied this can happend in normal flow
+                    todo!()
                 }
                 CommittedApplyPending(_) => {
                     // means we received Apply second time, we transitioned into CommittedApplyPending

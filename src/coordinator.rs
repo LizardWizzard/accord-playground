@@ -244,7 +244,6 @@ impl Coordinator {
         let pre_accept_stage = match progress.as_mut_pre_accept() {
             Some(pa) => pa,
             None => {
-                return None;
                 // After receiving a quorum we've made progress but continued to receive responses from other nodes, ignore?
                 panic!("TODO Expected PreAccept got {}", progress.name())
             }
@@ -339,8 +338,6 @@ impl Coordinator {
         }
 
         let commit_and_read = Self::make_commit_and_read(accept_stage, accept_ok.txn_id, &topology);
-
-        let body = std::mem::take(&mut accept_stage.body);
 
         *progress = TransactionProgress::Read(StageRead::from_stage_consensus_and_commit(
             accept_stage,

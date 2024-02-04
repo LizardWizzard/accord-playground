@@ -30,6 +30,7 @@ trait TransactionBehavior {
 }
 
 // Dummy execute function, take all keys except the last one, add their sum to last key's Value
+#[tracing::instrument]
 pub fn execute(mut reads: Vec<(Key, Value)>) -> (Key, Value) {
     // sort_by_key doesnt work as is because of issue with lifetimes
     reads.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
@@ -40,7 +41,10 @@ pub fn execute(mut reads: Vec<(Key, Value)>) -> (Key, Value) {
 
     let (last_k, last_v) = reads.pop().unwrap();
 
-    (last_k, Value(last_v.0 + sum))
+    let res = (last_k, Value(last_v.0 + sum));
+
+    tracing::info!(res = ?res);
+    res
 }
 
 // Dummy apply function corresponding to execute function above

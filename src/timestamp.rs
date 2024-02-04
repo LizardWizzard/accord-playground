@@ -1,6 +1,6 @@
 use crate::NodeId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timestamp {
     // assigned from a per-process monotonically increasing value
     // that is loosely synchronised with the wall clock
@@ -24,7 +24,7 @@ impl From<TxnId> for Timestamp {
     }
 }
 
-impl std::fmt::Display for Timestamp {
+impl std::fmt::Debug for Timestamp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("Ts({}.{}.{})", self.time, self.seq, self.id))
     }
@@ -34,7 +34,7 @@ impl std::fmt::Display for Timestamp {
 /// timestamp that the transaction gets assigned on the coordinator.
 /// At a later stages transaction is refferred to by its initial timestamp
 /// thus the name - transaction id
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TxnId(Timestamp);
 
 impl From<Timestamp> for TxnId {
@@ -49,10 +49,10 @@ impl AsRef<Timestamp> for TxnId {
     }
 }
 
-impl std::fmt::Display for TxnId {
+impl std::fmt::Debug for TxnId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
-            "Id({}.{}.{})",
+            "TxnId({}.{}.{})",
             self.0.time, self.0.seq, self.0.id
         ))
     }

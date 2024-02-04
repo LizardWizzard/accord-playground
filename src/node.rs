@@ -72,7 +72,7 @@ impl Node {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, kani))]
     pub(crate) fn data_store_mut(&mut self) -> &mut DataStore {
         &mut self.data_store
     }

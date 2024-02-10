@@ -1,15 +1,14 @@
-use std::{
-    cmp::Ordering,
-    collections::{HashMap, HashSet},
-    ops::Deref,
-};
+use std::{cmp::Ordering, ops::Deref};
 
-use crate::{transaction::Key, NodeId};
+use crate::{
+    collections::{Map, Set},
+    protocol::{transaction::Key, NodeId},
+};
 
 #[derive(Debug, Clone)]
 pub struct Shard {
     pub range: KeyRange,
-    pub node_ids: HashSet<NodeId>,
+    pub node_ids: Set<NodeId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,7 +27,7 @@ pub struct Topology {
     // contains sorted non intersecting ranges
     shards: Vec<Shard>,
     // Here Vec contains indexes into shard Vec above
-    node_to_shards: HashMap<NodeId, Vec<ShardId>>,
+    node_to_shards: Map<NodeId, Vec<ShardId>>,
 }
 
 pub struct ShardRef<'a> {
@@ -51,7 +50,7 @@ impl<'a> Deref for ShardRef<'a> {
 }
 
 impl Topology {
-    pub fn new(shards: Vec<Shard>, node_to_shards: HashMap<NodeId, Vec<ShardId>>) -> Self {
+    pub fn new(shards: Vec<Shard>, node_to_shards: Map<NodeId, Vec<ShardId>>) -> Self {
         Self {
             shards,
             node_to_shards,
@@ -62,17 +61,14 @@ impl Topology {
         let idx = self
             .shards
             .binary_search_by(|shard| {
-                let o = if &shard.range.lo <= key && key < &shard.range.hi {
+                if &shard.range.lo <= key && key < &shard.range.hi {
                     Ordering::Equal
                 } else if key < &shard.range.lo {
                     Ordering::Greater
                 } else {
                     // key >= range.hi
                     Ordering::Less
-                };
-
-                // dbg!(&shard.range.lo, key, &shard.range.hi, o);
-                o
+                }
             })
             .expect("we cover whole key range from min to max");
 
@@ -107,11 +103,9 @@ impl Topology {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use crate::collections::{Map, Set};
 
-    use crate::{transaction::Key, NodeId};
-
-    use super::{KeyRange, Shard, ShardId, Topology};
+    use super::{Key, KeyRange, NodeId, Shard, ShardId, Topology};
 
     #[test]
     fn key_to_shard() {
@@ -121,20 +115,20 @@ mod tests {
                     lo: Key(0),
                     hi: Key(10),
                 },
-                node_ids: HashSet::from([NodeId(1), NodeId(2), NodeId(3)]),
+                node_ids: Set::from([NodeId(1), NodeId(2), NodeId(3)]),
             },
             Shard {
                 range: KeyRange {
                     lo: Key(10),
                     hi: Key(20),
                 },
-                node_ids: HashSet::from([NodeId(4), NodeId(5), NodeId(6)]),
+                node_ids: Set::from([NodeId(4), NodeId(5), NodeId(6)]),
             },
         ];
 
         let topology = Topology::new(
             shards,
-            HashMap::from([
+            Map::from([
                 (NodeId(1), vec![ShardId(0)]),
                 (NodeId(2), vec![ShardId(0)]),
                 (NodeId(3), vec![ShardId(0)]),

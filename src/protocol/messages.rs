@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
+use crate::collections::{Map, Set};
 
-use crate::{
+use crate::protocol::{
     timestamp::{Timestamp, TxnId},
     transaction::{Key, TransactionBody, Value},
     NodeId,
@@ -21,21 +21,21 @@ pub struct PreAccept {
 pub struct PreAcceptOk {
     pub txn_id: TxnId,
     pub execute_at: Timestamp,
-    pub dependencies: HashSet<TxnId>,
+    pub dependencies: Set<TxnId>,
 }
 
 #[derive(Debug)]
 pub struct Commit {
     pub txn_id: TxnId,
     pub execute_at: Timestamp,
-    pub dependencies: HashSet<TxnId>,
+    pub dependencies: Set<TxnId>,
 }
 
 #[derive(Debug)]
 pub struct Accept {
     pub txn_id: TxnId,
     pub execute_at: Timestamp,
-    pub dependencies: HashSet<TxnId>,
+    pub dependencies: Set<TxnId>,
     // TODO (correctness): at this point we've already sent body in PreAccept, why send it second time? Check with java version
     pub body: TransactionBody,
 }
@@ -43,27 +43,27 @@ pub struct Accept {
 #[derive(Debug)]
 pub enum EitherCommitOrAccept {
     Commit(CommitAndRead),
-    Accept(HashMap<NodeId, Accept>),
+    Accept(Map<NodeId, Accept>),
 }
 
 #[derive(Debug)]
 pub struct AcceptOk {
     pub txn_id: TxnId,
-    pub dependencies: HashSet<TxnId>,
+    pub dependencies: Set<TxnId>,
 }
 
 #[derive(Debug)]
 pub struct Read {
     pub txn_id: TxnId,
     pub execute_at: Timestamp,
-    pub dependencies: HashSet<TxnId>,
-    pub keys: HashSet<Key>,
+    pub dependencies: Set<TxnId>,
+    pub keys: Set<Key>,
 }
 
 // TODO (perf): coalesce Commit and Read coming to one node into one network packet
 #[derive(Debug)]
 pub struct CommitAndRead {
-    pub commits: HashMap<NodeId, Commit>,
+    pub commits: Map<NodeId, Commit>,
     pub reads: Vec<(NodeId, Read)>,
 }
 
@@ -77,7 +77,7 @@ pub struct ReadOk {
 pub struct Apply {
     pub txn_id: TxnId,
     pub execute_at: Timestamp,
-    pub dependencies: HashSet<TxnId>,
+    pub dependencies: Set<TxnId>,
     /// Result of the computation for transaction.
     /// For now we just take sum of the keys that were read and add it to one of the keys value
     pub result: (Key, Value),

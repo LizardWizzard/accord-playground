@@ -1,13 +1,14 @@
-use std::{cmp, collections::HashSet};
-
-use hashbrown::{hash_map::Entry, HashMap};
+use std::cmp;
 
 use crate::{
-    messages::{Accept, AcceptOk, Apply, Commit, PreAccept, PreAcceptOk, Read, ReadOk},
-    node::DataStore,
-    timestamp::{Timestamp, TxnId},
-    transaction::{self, Key, TransactionBody, Value},
-    Lens, LensIterGuard, NodeId,
+    collections::{Lens, LensIterGuard, Map, MapEntry, Set},
+    protocol::{
+        messages::{Accept, AcceptOk, Apply, Commit, PreAccept, PreAcceptOk, Read, ReadOk},
+        node::DataStore,
+        timestamp::{Timestamp, TxnId},
+        transaction::{self, Key, TransactionBody, Value},
+        NodeId,
+    },
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -22,7 +23,7 @@ struct StageConsensus {
 
     // dependencies waiting on this transaction to become committed / applied
     // TODO describe how this can get populated during consensus stage
-    dependencies_waiting: HashSet<TxnId>,
+    dependencies_waiting: Set<TxnId>,
 
     body: TransactionBody,
 }
@@ -37,9 +38,9 @@ struct StageExecution {
     //              additionally it compresses txids into ints by maintaining a separate mapping in a vec. Consider doing that too
     //              I havent seen the reverse mapping on java side though.
     //              Also look at updateDependencyAndMaybeExecute
-    pending_dependencies: HashMap<TxnId, WaitingOn>,
+    pending_dependencies: Map<TxnId, WaitingOn>,
     // dependencies waiting on this transaction to become committed / applied
-    dependencies_waiting: HashSet<TxnId>,
+    dependencies_waiting: Set<TxnId>,
 
     body: TransactionBody,
 }
@@ -49,7 +50,7 @@ impl From<&mut StageConsensus> for StageExecution {
         StageExecution {
             execute_at: stage_consensus.execute_at,
             max_witnessed_at: stage_consensus.max_witnessed_at,
-            pending_dependencies: HashMap::new(),
+            pending_dependencies: Map::new(),
             dependencies_waiting: std::mem::take(&mut stage_consensus.dependencies_waiting),
             body: std::mem::take(&mut stage_consensus.body),
         }
@@ -95,6 +96,7 @@ impl Committed {
         ReplicaTransactionProgress::Applied
     }
 
+    #[allow(clippy::wrong_self_convention)]
     fn into_pending_apply(&mut self, result: (Key, Value)) -> ReplicaTransactionProgress {
         ReplicaTransactionProgress::CommittedApplyPending(CommittedApplyPending {
             stage_execution: StageExecution::from(&mut self.stage_execution),
@@ -184,7 +186,7 @@ impl ReplicaTransactionProgress {
         }
     }
 
-    fn pending_dependencies(&mut self) -> &mut HashMap<TxnId, WaitingOn> {
+    fn pending_dependencies(&mut self) -> &mut Map<TxnId, WaitingOn> {
         use ReplicaTransactionProgress::*;
 
         match self {
@@ -199,7 +201,7 @@ impl ReplicaTransactionProgress {
 
     fn mark_dependency_committed(&mut self, dep_id: TxnId) {
         match self.pending_dependencies().entry(dep_id) {
-            Entry::Occupied(mut o) => {
+            MapEntry::Occupied(mut o) => {
                 let dep = o.get_mut();
                 // TODO:
                 // replicas wait to answer this message until every such dependency has
@@ -212,7 +214,7 @@ impl ReplicaTransactionProgress {
                     WaitingOn::Apply => unreachable!("cant be applied before committed"),
                 }
             }
-            Entry::Vacant(_) => panic!("TODO: dependency must exist"),
+            MapEntry::Vacant(_) => panic!("TODO: dependency must exist"),
         };
     }
 
@@ -220,8 +222,8 @@ impl ReplicaTransactionProgress {
         let pending_dependencies = self.pending_dependencies();
 
         let dep = match pending_dependencies.entry(dep_id) {
-            Entry::Occupied(o) => o,
-            Entry::Vacant(_) => panic!("TODO: dependency must exist"),
+            MapEntry::Occupied(o) => o,
+            MapEntry::Vacant(_) => panic!("TODO: dependency must exist"),
         };
 
         match dep.get() {
@@ -236,7 +238,7 @@ impl ReplicaTransactionProgress {
 
 #[derive(Default)]
 pub struct Replica {
-    transactions: HashMap<TxnId, ReplicaTransactionProgress>,
+    transactions: Map<TxnId, ReplicaTransactionProgress>,
 }
 
 impl Replica {
@@ -245,7 +247,7 @@ impl Replica {
     pub fn receive_pre_accept(&mut self, pre_accept: PreAccept, node_id: NodeId) -> PreAcceptOk {
         let initial_timestamp = Timestamp::from(pre_accept.txn_id); // t0 in the paper
         let mut max_conflicting_timestamp = initial_timestamp;
-        let mut dependencies = HashSet::new();
+        let mut dependencies = Set::new();
 
         for (txn_id, transaction) in self
             .transactions
@@ -288,7 +290,7 @@ impl Replica {
                 ReplicaTransactionProgress::PreAccepted(StageConsensus {
                     execute_at,
                     max_witnessed_at: execute_at,
-                    dependencies_waiting: HashSet::new(),
+                    dependencies_waiting: Set::new(),
                     body: pre_accept.body,
                 }),
             )
@@ -319,7 +321,7 @@ impl Replica {
         });
 
         // TODO (clarity) extract into function.
-        let mut dependencies = HashSet::new();
+        let mut dependencies = Set::new();
         for (txn_id, transaction) in self
             .transactions
             .iter()
@@ -347,9 +349,9 @@ impl Replica {
     pub fn receive_commit(&mut self, commit: Commit) {
         // TODO (correctness) store full dependency set, transaction body etc
         // TODO (feature) arm recovery timer
-        let dummy = HashSet::new();
+        let dummy = Set::new();
         let (mut root_guard, dummy_iter_guard) =
-            Lens::new(commit.txn_id, &dummy, &mut self.transactions).expect("TODO");
+            Lens::zoom(commit.txn_id, &dummy, &mut self.transactions).expect("TODO");
 
         root_guard.with_mut(|progress| {
             let stage_consensus = progress.as_mut_pre_accepted_or_accepted().expect("TODO");
@@ -371,10 +373,10 @@ impl Replica {
     fn register_pending_dependencies(
         txn_id: TxnId,
         deps_iter_guard: &mut LensIterGuard<TxnId, ReplicaTransactionProgress>,
-    ) -> HashMap<TxnId, WaitingOn> {
+    ) -> Map<TxnId, WaitingOn> {
         // Register this transaction in each of its dependencies so once they're
         // committed/applied this transaction can move forward too
-        let mut pending_dependencies = HashMap::new();
+        let mut pending_dependencies = Map::new();
 
         // TODO it is actually OK that dependency is not found because we send full set of dependencies
         deps_iter_guard.for_each_mut(|dep_id, dep| {
@@ -423,7 +425,7 @@ impl Replica {
         data_store: &DataStore,
     ) -> Option<ReadOk> {
         let (mut root_guard, mut deps_iter_guard) =
-            Lens::new(read.txn_id, &read.dependencies, &mut self.transactions).expect("TODO");
+            Lens::zoom(read.txn_id, &read.dependencies, &mut self.transactions).expect("TODO");
 
         root_guard.with_mut(|progress| {
             let stage_committed = progress.as_mut_committed().expect("TODO");
@@ -457,9 +459,9 @@ impl Replica {
         })
     }
 
-    fn propagate_apply_to_waiting_dependencies<'a, 'b>(
+    fn propagate_apply_to_waiting_dependencies(
         txn_id: TxnId,
-        dependencies_waiting_iter_guard: LensIterGuard<'a, 'b, TxnId, ReplicaTransactionProgress>,
+        dependencies_waiting_iter_guard: LensIterGuard<'_, '_, TxnId, ReplicaTransactionProgress>,
         res: &mut Vec<(NodeId, ReadOk)>,
         data_store: &mut DataStore,
     ) {
@@ -504,12 +506,12 @@ impl Replica {
         &mut self,
         _src_node: NodeId,
         apply: Apply,
-        mut data_store: &mut DataStore,
+        data_store: &mut DataStore,
     ) -> Vec<(NodeId, ReadOk)> {
         use ReplicaTransactionProgress::*;
 
         let (mut root_guard, mut pending_deps_iter_guard) =
-            Lens::new(apply.txn_id, &apply.dependencies, &mut self.transactions).expect("TODO");
+            Lens::zoom(apply.txn_id, &apply.dependencies, &mut self.transactions).expect("TODO");
 
         let mut res = vec![];
 
@@ -537,7 +539,7 @@ impl Replica {
                             // waiting on us are disjoint. In other words there cant be a cycle.
                             .expect("failed to exchange for deps_waiting_guard"),
                         &mut res,
-                        &mut data_store,
+                        data_store,
                     );
 
                     let (key, value) = apply.result;

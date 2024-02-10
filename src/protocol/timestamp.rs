@@ -1,4 +1,4 @@
-use crate::NodeId;
+use crate::protocol::NodeId;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timestamp {
@@ -72,7 +72,7 @@ impl TimestampProvider {
         }
     }
 
-    pub fn next(&mut self) -> Timestamp {
+    pub fn tick_next(&mut self) -> Timestamp {
         self.counter += 1;
         Timestamp {
             time: self.counter,

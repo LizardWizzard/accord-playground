@@ -1,21 +1,22 @@
-use std::collections::HashMap;
-
 use crate::{
-    coordinator::Coordinator,
-    messages::{
-        Accept, AcceptOk, Apply, Commit, CommitAndRead, EitherCommitOrAccept, NewTransaction,
-        PreAccept, PreAcceptOk, Read, ReadOk,
+    collections::Map,
+    protocol::{
+        coordinator::Coordinator,
+        messages::{
+            Accept, AcceptOk, Apply, Commit, CommitAndRead, EitherCommitOrAccept, NewTransaction,
+            PreAccept, PreAcceptOk, Read, ReadOk,
+        },
+        replica::Replica,
+        timestamp::TimestampProvider,
+        topology::Topology,
+        transaction::{Key, Value},
+        NodeId,
     },
-    replica::Replica,
-    timestamp::TimestampProvider,
-    topology::Topology,
-    transaction::{Key, Value},
-    NodeId,
 };
 
 #[derive(Default)]
 pub struct DataStore {
-    data: HashMap<Key, Value>,
+    data: Map<Key, Value>,
 }
 
 impl DataStore {

@@ -1,0 +1,6 @@
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "Unsuitable for verification use crate::collections:Map that cfg's into the right version" },
+    { path = "std::collections::HashSet", reason = "Unsuitable for verification use crate::collections:Set that cfg's into the right version" },
+    { path = "hashbrown::HashMap", reason = "Unsuitable for verification use crate::collections:Map that cfg's into the right version" },
+    { path = "hashbrown::HashSet", reason = "Unsuitable for verification use crate::collections:Set that cfg's into the right version" },
+]

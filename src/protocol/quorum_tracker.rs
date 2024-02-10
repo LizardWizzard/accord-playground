@@ -1,8 +1,9 @@
-use std::collections::HashMap;
-
 use crate::{
-    topology::{KeyRange, Topology},
-    NodeId,
+    collections::Map,
+    protocol::{
+        topology::{KeyRange, Topology},
+        NodeId,
+    },
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -44,7 +45,7 @@ impl QuorumTracker {
 #[derive(Debug, Default, Clone)]
 pub struct ShardQuorumTracker {
     // TODO use shard_id?
-    pub shards: HashMap<KeyRange, QuorumTracker>,
+    pub shards: Map<KeyRange, QuorumTracker>,
 }
 
 impl ShardQuorumTracker {

@@ -1,6 +1,4 @@
-use std::collections::HashSet;
-
-use crate::node::DataStore;
+use crate::{collections::Set, protocol::node::DataStore};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Key(pub usize);
@@ -10,14 +8,14 @@ pub struct Value(pub usize);
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TransactionBody {
-    pub keys: HashSet<Key>,
+    pub keys: Set<Key>,
 }
 
 trait TransactionBehavior {
     type ExecutionResult;
 
     /// Returns set of keys that transaction wants to read from or write to
-    fn read_write_set(&self) -> HashSet<Key>;
+    fn read_write_set(&self) -> Set<Key>;
 
     /// Executes core transaction logic by transforming read set into write set.
     /// Returned values are inserted during as part of apply phase.

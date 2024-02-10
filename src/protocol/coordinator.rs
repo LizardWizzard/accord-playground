@@ -1,18 +1,18 @@
-use std::{
-    cmp,
-    collections::{HashMap, HashSet},
-};
+use std::cmp;
 
 use crate::{
-    messages::{
-        Accept, AcceptOk, Apply, Commit, CommitAndRead, EitherCommitOrAccept, NewTransaction,
-        PreAccept, PreAcceptOk, Read, ReadOk,
+    collections::{Map, Set},
+    protocol::{
+        messages::{
+            Accept, AcceptOk, Apply, Commit, CommitAndRead, EitherCommitOrAccept, NewTransaction,
+            PreAccept, PreAcceptOk, Read, ReadOk,
+        },
+        quorum_tracker::{Outcome, QuorumTracker, ShardQuorumTracker},
+        timestamp::{Timestamp, TimestampProvider, TxnId},
+        topology::{ShardId, Topology},
+        transaction::{execute, Key, TransactionBody, Value},
+        NodeId,
     },
-    quorum_tracker::{Outcome, QuorumTracker, ShardQuorumTracker},
-    timestamp::{Timestamp, TimestampProvider, TxnId},
-    topology::{ShardId, Topology},
-    transaction::{execute, Key, TransactionBody, Value},
-    NodeId,
 };
 
 #[derive(Debug, Clone)]
@@ -22,16 +22,16 @@ struct StageConsensus {
     // tracks progress across participating shards in PreAccept and AcceptRounds
     quorum_tracker: ShardQuorumTracker,
     // Transactions this one depends from, gathered from participating shards
-    dependencies: HashSet<TxnId>,
+    dependencies: Set<TxnId>,
     // Participating shards, keep them to avoid recalculation each time we need
     // to send a message to nodes from every shard
-    participating_shards: HashSet<ShardId>,
+    participating_shards: Set<ShardId>,
     // The logical core of the transaction. For now this is just the keys it accesses
     body: TransactionBody,
 }
 
 impl StageConsensus {
-    fn combine_dependencies(&mut self, dependencies: HashSet<TxnId>) {
+    fn combine_dependencies(&mut self, dependencies: Set<TxnId>) {
         // TODO (perf): does extend(foo.iter()) invoke .reserve?
         self.dependencies.reserve(dependencies.len());
         for dep in dependencies {
@@ -45,13 +45,13 @@ struct StageRead {
     // reads gathered from participating shards
     execute_at: Timestamp,
     // Transactions this one depends from, gathered from participating shards
-    dependencies: HashSet<TxnId>,
+    dependencies: Set<TxnId>,
     // KV pairs fetched as part of transaction Read interest
     reads: Vec<(Key, Value)>,
     // number of pending read requests
     pending_reads: u8,
 
-    participating_shards: HashSet<ShardId>,
+    participating_shards: Set<ShardId>,
 
     body: TransactionBody,
 }
@@ -115,7 +115,7 @@ impl TransactionProgress {
 
 #[derive(Default)]
 pub struct Coordinator {
-    transactions: HashMap<TxnId, TransactionProgress>,
+    transactions: Map<TxnId, TransactionProgress>,
 }
 
 impl Coordinator {
@@ -126,11 +126,11 @@ impl Coordinator {
         timestamp_provider: &mut TimestampProvider,
         topology: &Topology,
     ) -> Vec<(NodeId, PreAccept)> {
-        let txn_id = TxnId::from(timestamp_provider.next());
+        let txn_id = TxnId::from(timestamp_provider.tick_next());
         // TODO (feature): in the paper it is union of fast path electorates for all participating shards, simplify with simple quorum for now
         // TODO (clarity): more comments
-        let mut participating_nodes: HashSet<NodeId> = HashSet::new();
-        let mut participating_shards: HashSet<ShardId> = HashSet::new();
+        let mut participating_nodes: Set<NodeId> = Set::new();
+        let mut participating_shards: Set<ShardId> = Set::new();
 
         let mut quorum_tracker = ShardQuorumTracker::default();
         for key in &txn.body.keys {
@@ -169,7 +169,7 @@ impl Coordinator {
             TransactionProgress::PreAccept(StageConsensus {
                 execute_at: Timestamp::from(txn_id),
                 quorum_tracker,
-                dependencies: HashSet::new(),
+                dependencies: Set::new(),
                 body: txn.body,
                 participating_shards,
             }),
@@ -183,7 +183,7 @@ impl Coordinator {
         txn_id: TxnId,
         topology: &Topology,
     ) -> CommitAndRead {
-        let mut commits = HashMap::new();
+        let mut commits = Map::new();
 
         let mut reads = vec![];
 
@@ -259,7 +259,7 @@ impl Coordinator {
         let have_quorum =
             pre_accept_stage
                 .quorum_tracker
-                .record_outcome(src_node, &topology, Outcome::Success);
+                .record_outcome(src_node, topology, Outcome::Success);
 
         if !have_quorum {
             return None;
@@ -268,7 +268,7 @@ impl Coordinator {
         if pre_accept_stage.execute_at == Timestamp::from(txn_id) {
             // we've reached fast path decision there were no conflicts so our initial
             // timestamp becomes the transaction execution timestamp
-            let commit_and_read = Self::make_commit_and_read(pre_accept_stage, txn_id, &topology);
+            let commit_and_read = Self::make_commit_and_read(pre_accept_stage, txn_id, topology);
 
             *progress = TransactionProgress::Read(StageRead::from_stage_consensus_and_commit(
                 pre_accept_stage,
@@ -279,7 +279,7 @@ impl Coordinator {
         } else {
             // we didnt reach fast path decision, we now need to broadcast new timestamp
             // for a transaction that is a maximum among all ones we've received from all participating nodes
-            let mut accepts = HashMap::new();
+            let mut accepts = Map::new();
 
             for key in &pre_accept_stage.body.keys {
                 let shard = &topology.shard_for_key(key);
@@ -306,7 +306,7 @@ impl Coordinator {
             *progress = TransactionProgress::Accept(StageConsensus {
                 execute_at: pre_accept_stage.execute_at,
                 quorum_tracker,
-                dependencies: HashSet::new(),
+                dependencies: Set::new(),
                 participating_shards,
                 body,
             });
@@ -331,13 +331,13 @@ impl Coordinator {
         let have_quorum =
             accept_stage
                 .quorum_tracker
-                .record_outcome(src_node, &topology, Outcome::Success);
+                .record_outcome(src_node, topology, Outcome::Success);
 
         if !have_quorum {
             return None;
         }
 
-        let commit_and_read = Self::make_commit_and_read(accept_stage, accept_ok.txn_id, &topology);
+        let commit_and_read = Self::make_commit_and_read(accept_stage, accept_ok.txn_id, topology);
 
         *progress = TransactionProgress::Read(StageRead::from_stage_consensus_and_commit(
             accept_stage,

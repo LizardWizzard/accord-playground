@@ -1,7 +1,7 @@
 use std::cmp;
 
 use crate::{
-    collections::{Lens, LensIterGuard, Map, MapEntry, Set},
+    collections::{split, IterGuard, Map, MapEntry, Set},
     protocol::{
         messages::{Accept, AcceptOk, Apply, Commit, PreAccept, PreAcceptOk, Read, ReadOk},
         node::DataStore,
@@ -351,13 +351,13 @@ impl Replica {
         // TODO (feature) arm recovery timer
         let dummy = Set::new();
         let (mut root_guard, dummy_iter_guard) =
-            Lens::zoom(commit.txn_id, &dummy, &mut self.transactions).expect("TODO");
+            split(commit.txn_id, &dummy, &mut self.transactions).expect("TODO");
 
         root_guard.with_mut(|progress| {
             let stage_consensus = progress.as_mut_pre_accepted_or_accepted().expect("TODO");
             let stage_execution = StageExecution::from(stage_consensus);
 
-            let deps_waiting_guard = dummy_iter_guard
+            let mut deps_waiting_guard = dummy_iter_guard
                 .exchange(&stage_execution.dependencies_waiting)
                 .expect("TODO");
 
@@ -372,7 +372,7 @@ impl Replica {
 
     fn register_pending_dependencies(
         txn_id: TxnId,
-        deps_iter_guard: &mut LensIterGuard<TxnId, ReplicaTransactionProgress>,
+        deps_iter_guard: &mut IterGuard<TxnId, ReplicaTransactionProgress>,
     ) -> Map<TxnId, WaitingOn> {
         // Register this transaction in each of its dependencies so once they're
         // committed/applied this transaction can move forward too
@@ -425,7 +425,7 @@ impl Replica {
         data_store: &DataStore,
     ) -> Option<ReadOk> {
         let (mut root_guard, mut deps_iter_guard) =
-            Lens::zoom(read.txn_id, &read.dependencies, &mut self.transactions).expect("TODO");
+            split(read.txn_id, &read.dependencies, &mut self.transactions).expect("TODO");
 
         root_guard.with_mut(|progress| {
             let stage_committed = progress.as_mut_committed().expect("TODO");
@@ -461,7 +461,7 @@ impl Replica {
 
     fn propagate_apply_to_waiting_dependencies(
         txn_id: TxnId,
-        dependencies_waiting_iter_guard: LensIterGuard<'_, '_, TxnId, ReplicaTransactionProgress>,
+        mut dependencies_waiting_iter_guard: IterGuard<'_, '_, TxnId, ReplicaTransactionProgress>,
         res: &mut Vec<(NodeId, ReadOk)>,
         data_store: &mut DataStore,
     ) {
@@ -511,7 +511,7 @@ impl Replica {
         use ReplicaTransactionProgress::*;
 
         let (mut root_guard, mut pending_deps_iter_guard) =
-            Lens::zoom(apply.txn_id, &apply.dependencies, &mut self.transactions).expect("TODO");
+            split(apply.txn_id, &apply.dependencies, &mut self.transactions).expect("TODO");
 
         let mut res = vec![];
 

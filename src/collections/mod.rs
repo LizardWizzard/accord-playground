@@ -1,3 +1,5 @@
+mod arraymap;
+
 #[allow(clippy::disallowed_types)]
 #[cfg(not(kani))]
 mod default {
@@ -16,7 +18,6 @@ mod default {
     // Since we can guarantee that we wont borrow the same entity twice we can safely mutate different ones at the same time.
     // TODO: HashMap during lookup can touch keys other than the passed one, thus it can dereference root key while searching
     // for other keys, thus creating a shared borrow in addition to mutable one
-    // TODO
     // TODO there can be a trait that provides a method that returns id and a unique sequence that are guaranteed to be unique together
     // I e Apply message can easily implement it, because transaction cant depend on itself thus Apply.txn_id
     // and Apply.dependencies are guaranteed to be unique together
@@ -121,11 +122,11 @@ mod default {
 mod verification {
     use std::marker::PhantomData;
 
-    use vector_map::{set::VecSet, Entry, VecMap};
+    use super::arraymap;
 
-    pub type Set<T> = VecSet<T>;
-    pub type Map<K, V> = VecMap<K, V>;
-    pub type MapEntry<'a, K, V> = Entry<'a, K, V>;
+    pub type Set<T> = arraymap::ArraySet<T>;
+    pub type Map<K, V> = arraymap::ArrayMap<K, V>;
+    pub type MapEntry<'a, K, V> = arraymap::Entry<'a, K, V>;
 
     pub fn split<'a, 'b, K, V>(
         root_key: K,

@@ -6,7 +6,7 @@ pub struct Key(pub usize);
 #[derive(Debug, Clone)]
 pub struct Value(pub usize);
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct TransactionBody {
     pub keys: Set<Key>,
 }

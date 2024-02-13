@@ -321,7 +321,7 @@ mod tests {
 
 #[cfg(kani)]
 mod verification {
-    use crate::collections::{Map, Set};
+    use crate::collections::Map;
 
     use super::harness::*;
 

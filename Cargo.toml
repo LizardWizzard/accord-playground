@@ -11,11 +11,11 @@ tracing = "0.1.40"
 # kani doesnt use dev-dependencies :(
 # https://github.com/model-checking/kani/issues/585
 # vector-map = { version = "1.0.1", optional = true }
-vector-map = { path = "vec-map-rs", optional = true }
+arrayvec = { version = "0.7.4", optional = true }
 
 [dev-dependencies]
 once_cell = "1.19.0"
 tracing-subscriber = "0.3.18"
 
 [features]
-verification = ["vector-map"]
+verification = ["arrayvec"]

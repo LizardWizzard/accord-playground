@@ -9,12 +9,17 @@ pub mod transaction;
 
 use std::hash::Hash;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(u16);
 
-impl std::fmt::Display for NodeId {
+impl std::fmt::Debug for NodeId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!("N{}", self.0))
+    }
+}
+impl std::fmt::Display for NodeId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self, f)
     }
 }
 
@@ -123,7 +128,7 @@ mod harness {
 
             #[cfg(not(kani))]
             log::LOG_HANDLE.get_or_init(|| {
-                tracing_subscriber::fmt::init();
+                tracing_subscriber::fmt().with_target(false).init();
             });
 
             Harness { nodes, topology }

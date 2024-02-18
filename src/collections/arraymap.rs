@@ -1,4 +1,4 @@
-// #![cfg(verification)]
+#![cfg(kani)]
 
 use std::{borrow::Borrow, ops::Index};
 

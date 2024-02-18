@@ -113,6 +113,12 @@ impl TransactionProgress {
     }
 }
 
+impl std::fmt::Display for TransactionProgress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 #[derive(Default)]
 pub struct Coordinator {
     transactions: Map<TxnId, TransactionProgress>,
@@ -241,13 +247,10 @@ impl Coordinator {
             .get_mut(&pre_accept_ok.txn_id)
             .expect("TODO (correctness):");
 
-        let pre_accept_stage = match progress.as_mut_pre_accept() {
-            Some(pa) => pa,
-            None => {
-                // After receiving a quorum we've made progress but continued to receive responses from other nodes, ignore?
-                panic!("TODO Expected PreAccept got {}", progress.name())
-            }
-        };
+        // In case TransactionProgress is no longer in PreAccept stage it means that
+        // after receiving a quorum we've made progress but continued to receive responses from remaining replicas
+        // Such responses can be safely ignored.
+        let pre_accept_stage = progress.as_mut_pre_accept()?;
 
         pre_accept_stage.execute_at =
             cmp::max(pre_accept_stage.execute_at, pre_accept_ok.execute_at);

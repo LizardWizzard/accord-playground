@@ -125,13 +125,14 @@ impl CommittedApplyPending {
 }
 
 enum ReplicaTransactionProgress {
-    // Initial stage when replica is notified about transaction in PreAccept round
+    /// Initial stage when replica is notified about transaction in PreAccept round
     PreAccepted(StageConsensus),
-    // In case PreAccept round was not sufficient to determine execution timestamp we move on to Accept round
+    /// In case PreAccept round was not sufficient to determine execution timestamp we move on to Accept round
     Accepted(StageConsensus),
-    // After either of PreAccept or Accept transaction becomes committed
+    /// After either of PreAccept or Accept transaction becomes committed
     Committed(Committed),
-    // The only difference with Committed is supplementary info about pending Read requests
+    /// The only difference with Committed is supplementary info about pending Read requests.
+    /// Note that after read request is satisfied we're  
     CommittedReadPending((Committed, ReadInterest)),
 
     CommittedApplyPending(CommittedApplyPending),
@@ -517,7 +518,12 @@ impl Replica {
 
         root_guard.with_mut(|progress| {
             match progress {
-                Committed(committed) => {
+                Committed(committed) 
+                // This could mean is that read request was satisfied by other replica and we become out of date.
+                // So we should go forward with apply if we're ok dependency-wise.
+                // Also since we cant transition to ApplyPending because we dont have result yet when
+                // ReadOk is satisfied this can happen in normal flow
+                | CommittedReadPending((committed, _)) => {
                     let pending_dependencies = Self::register_pending_dependencies(
                         apply.txn_id,
                         &mut pending_deps_iter_guard,
@@ -545,13 +551,6 @@ impl Replica {
                     let (key, value) = apply.result;
                     *progress = committed.apply(key, value, data_store);
                 }
-                CommittedReadPending(_) => {
-                    // This could mean is that read request was satisfied by other replica and we become out of date.
-                    // So we should go forward with apply if we're ok dependency-wise.
-                    // Also since we cant transition to to ApplyPending because we dont have result yet when
-                    // ReadOk is satisfied this can happend in normal flow
-                    todo!()
-                }
                 CommittedApplyPending(_) => {
                     // means we received Apply second time, we transitioned into CommittedApplyPending
                     // and this is the state where transaction waits for its dependencies to apply after receiving Apply
@@ -560,9 +559,6 @@ impl Replica {
                 _ => panic!("TODO"),
             };
         });
-
-        // in case we didnt receive read we dont have pending_dependencies calculatetd for us, we need to calculate it ourselves
-        // in case there is something to wait for
 
         res
     }
